@@ -8,11 +8,12 @@ class PERCLOSCalculator:
     Computes PERCLOS using sliding window on EAR signal
     PERCLOS = percentage of time eyes are closed in a time window
     """
-    def __init__(self, window_size=90, threshold=0.2):
+    def __init__(self, window_size=90, threshold=0.20):
         """
         Args:
             window_size: Number of samples for sliding window (default 90 ≈ 3 sec)
-            threshold: EAR threshold for "closed" eyes (default 0.2)
+            threshold: EAR threshold for "closed" eyes (default 0.20 - more forgiving)
+                       Normal open-eye EAR is ~0.25-0.35, closed is <0.15
         """
         self.window_size = window_size
         self.threshold = threshold

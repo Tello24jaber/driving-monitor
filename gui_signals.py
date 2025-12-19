@@ -53,7 +53,7 @@ class DriverMonitorGUI:
         self.signal_buffer = SignalBuffer(max_size=300)
         self.ear_filter = MovingAverageFilter(window_size=7)
         self.pitch_filter = MovingAverageFilter(window_size=15)
-        self.perclos_calc = PERCLOSCalculator(window_size=90, threshold=0.2)
+        self.perclos_calc = PERCLOSCalculator(window_size=90, threshold=0.20)  # Higher threshold to match decision engine
         self.decision_engine = DrowsinessDecisionEngine()
         self.audio_alert = AudioAlert(frequency=800, duration=300)
         
@@ -244,15 +244,16 @@ class DriverMonitorGUI:
         # Initialize empty lines
         self.line_raw_ear, = self.ax_ear.plot([], [], 'b-', alpha=0.3, linewidth=1, label='Raw EAR')
         self.line_smooth_ear, = self.ax_ear.plot([], [], 'cyan', linewidth=2, label='Smoothed EAR')
-        self.line_threshold_ear = self.ax_ear.axhline(y=0.2, color='red', linestyle='--', 
-                                                       linewidth=1, alpha=0.7, label='Threshold')
+        self.line_threshold_ear = self.ax_ear.axhline(y=0.18, color='red', linestyle='--', 
+                                                       linewidth=1, alpha=0.7, label='Danger Threshold')
         self.ax_ear.legend(loc='upper right', fontsize=8, facecolor='#2d2d2d', 
                           edgecolor='white', labelcolor='white')
         
         self.line_raw_pitch, = self.ax_pitch.plot([], [], 'orange', alpha=0.3, linewidth=1, label='Raw Pitch')
         self.line_smooth_pitch, = self.ax_pitch.plot([], [], 'yellow', linewidth=2, label='Smoothed Pitch')
-        self.line_threshold_pitch = self.ax_pitch.axhline(y=20.0, color='red', linestyle='--', 
+        self.line_threshold_pitch = self.ax_pitch.axhline(y=30.0, color='red', linestyle='--', 
                                                            linewidth=1, alpha=0.7, label='Danger Threshold')
+        self.ax_pitch.axhline(y=-30.0, color='red', linestyle='--', linewidth=1, alpha=0.7)  # Negative threshold
         self.ax_pitch.legend(loc='upper right', fontsize=8, facecolor='#2d2d2d', 
                             edgecolor='white', labelcolor='white')
     
