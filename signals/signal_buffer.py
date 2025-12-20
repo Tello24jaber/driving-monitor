@@ -21,9 +21,10 @@ class SignalBuffer:
         self.head_pitch = deque(maxlen=max_size)
         self.head_roll = deque(maxlen=max_size)
         self.head_yaw = deque(maxlen=max_size)
+        self.mar = deque(maxlen=max_size)
         self.timestamps = deque(maxlen=max_size)
         
-    def add_sample(self, ear_left, ear_right, pitch, roll, yaw):
+    def add_sample(self, ear_left, ear_right, pitch, roll, yaw, mar=0.0):
         """Add new sample to all buffers"""
         ear_avg = (ear_left + ear_right) / 2.0
         
@@ -33,6 +34,7 @@ class SignalBuffer:
         self.head_pitch.append(pitch)
         self.head_roll.append(roll)
         self.head_yaw.append(yaw)
+        self.mar.append(mar)
         self.timestamps.append(time.time())
         
     def get_array(self, signal_name):
@@ -43,7 +45,8 @@ class SignalBuffer:
             'ear_avg': self.ear_avg,
             'pitch': self.head_pitch,
             'roll': self.head_roll,
-            'yaw': self.head_yaw
+            'yaw': self.head_yaw,
+            'mar': self.mar
         }
         return np.array(buffer_map.get(signal_name, []))
     
@@ -69,4 +72,5 @@ class SignalBuffer:
         self.head_pitch.clear()
         self.head_roll.clear()
         self.head_yaw.clear()
+        self.mar.clear()
         self.timestamps.clear()

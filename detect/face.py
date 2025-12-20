@@ -14,6 +14,45 @@ from detect.pose import *
 from utils import *
 
 # -----------------------------------------------------------------------------
+# Helper Functions for ROI Extraction
+# -----------------------------------------------------------------------------
+
+def get_roi_with_scale(landmarks, scale=1.8):
+    """
+    Extract region of interest with expanded bounding box for better context.
+    Based on reference implementation for improved signal detection.
+    
+    Args:
+        landmarks (numpy.ndarray): Array of landmark points [(x,y), ...]
+        scale (float): Scale factor to expand ROI (default 1.8)
+        
+    Returns:
+        tuple: (x_min, y_min, x_max, y_max) bounding box coordinates
+    """
+    if len(landmarks) == 0:
+        return None
+        
+    x_coords = landmarks[:, 0]
+    y_coords = landmarks[:, 1]
+    
+    min_x, max_x = np.min(x_coords), np.max(x_coords)
+    min_y, max_y = np.min(y_coords), np.max(y_coords)
+    
+    # Calculate center and size
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    box_size = int(max(max_x - min_x, max_y - min_y) * scale)
+    
+    # Expand box around center
+    half_size = box_size // 2
+    x_min = int(center_x - half_size)
+    y_min = int(center_y - half_size)
+    x_max = int(center_x + half_size)
+    y_max = int(center_y + half_size)
+    
+    return (x_min, y_min, x_max, y_max)
+
+# -----------------------------------------------------------------------------
 # Face Tracking Class
 # -----------------------------------------------------------------------------
 
@@ -114,7 +153,8 @@ class FaceDetector:
 
             self.baseR, self.baseP, self.baseY, self.baseG = self.define_normal_position()
             self.ear = self.calculate_eye_aspect_ratio(leftEye,rightEye)
-            self.perclos, self.sleepEyes = self.calculate_perclos(self.ear, roll)
+            # Use OR logic: if EITHER eye is closed, trigger detection (more sensitive)
+            self.perclos, self.sleepEyes = self.calculate_perclos_with_or_logic(self.ear, self.earLeft, self.earRight, roll)
             self.mar = self.calculate_mouth_aspect_ratio(upperLips, lowerLips)
             self.gaze = self.estimate_gaze(leftEye,rightEye,leftIris,rightIris)
             self.yawnRate, self.yawnStatus = self.estimate_yawning_rate(self.mar)
@@ -204,26 +244,74 @@ class FaceDetector:
     
     def calculate_eye_aspect_ratio(self, leftEye, rightEye): 
 
-        """ Calculate the average eye aspect ratio of both eyes.
+        """ Calculate individual and average eye aspect ratio.
 
         Args:
             leftEye (numpy.ndarray): Left eye landmark points.
             rightEye (numpy.ndarray): Right eye landmark points.
 
         Returns:
-            float: The average eye aspect ratio.
+            tuple: (earAvg, earLeft, earRight) for individual eye tracking
         """ 
 
         earLeft = (LA.norm(leftEye[13] - leftEye[3]) + LA.norm(leftEye[11] - leftEye[5])) / (2 * LA.norm(leftEye[0] - leftEye[8]))
         earRight = (LA.norm(rightEye[13] - rightEye[3]) + LA.norm(rightEye[11] - rightEye[5])) / (2 * LA.norm(rightEye[0] - rightEye[8]))
             
         earAvg = (earLeft + earRight) / 2
+        
+        # Store individual EARs for OR logic detection
+        self.earLeft = earLeft
+        self.earRight = earRight
 
         return earAvg
     
+    def calculate_perclos_with_or_logic(self, earAvg, earLeft, earRight, roll):
+
+        """ Calculate the PERCLOS score with OR logic (either eye closed triggers alert).
+
+        Args:
+            earAvg (float): The average eye aspect ratio.
+            earLeft (float): Left eye aspect ratio.
+            earRight (float): Right eye aspect ratio.
+            roll (float): The estimated roll angle of the head.
+
+        Returns:
+            tuple: A tuple containing the PERCLOS score and a flag indicating sleepy eyes.
+        """
+
+        # Adjust for head tilt
+        if roll > self.baseR + self.headThresh or roll < self.baseR - self.headThresh:
+            earAvg = earAvg * (1+ abs(roll)/15)
+            earLeft = earLeft * (1+ abs(roll)/15)
+            earRight = earRight * (1+ abs(roll)/15)
+
+        sleepyEyes = False
+
+        timer = time.time() - self.initialTime
+
+        # OR logic: if EITHER eye is closed, increment counters (more sensitive detection)
+        if (earLeft is not None and earLeft <= self.earThresh) or (earRight is not None and earRight <= self.earThresh):
+            self.blinkCounter += 1
+            self.eyeCounter += 1
+
+            if self.eyeCounter > self.blinkThresh:
+                sleepyEyes = True
+        else:
+            self.eyeCounter = 0
+            sleepyEyes = False
+
+        closedTime = self.blinkCounter / self.fps
+        perclosScore = closedTime / 60
+
+        if timer >= 60:
+            self.blinkCounter = 0
+            self.initialTime = time.time()
+
+        return perclosScore, sleepyEyes
+    
     def calculate_perclos(self, earAvg, roll):
 
-        """ Calculate the PERCLOS score and check for sleepy eyes.
+        """ Legacy PERCLOS calculation (kept for compatibility).
 
         Args:
             earAvg (float): The average eye aspect ratio.

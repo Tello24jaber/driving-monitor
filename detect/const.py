@@ -5,7 +5,12 @@
 ___all__ = ['Landmarks']
 
 class Landmarks(object):
-
+    # Core landmarks for faster/more reliable detection (from reference implementation)
+    LEFT_EYE_CORE = [33, 133]  # Key points for left eye
+    RIGHT_EYE_CORE = [362, 263]  # Key points for right eye
+    MOUTH_CORE = [13, 14, 78, 308]  # Key points for mouth
+    
+    # Full landmark sets for detailed analysis
     LEFT_EYE   = [ 362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385,384, 398 ]
     RIGHT_EYE  = [ 33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161 , 246 ]
     LOWER_LIPS = [ 61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95 ]

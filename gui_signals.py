@@ -53,6 +53,7 @@ class DriverMonitorGUI:
         self.signal_buffer = SignalBuffer(max_size=300)
         self.ear_filter = MovingAverageFilter(window_size=7)
         self.pitch_filter = MovingAverageFilter(window_size=15)
+        self.mar_filter = MovingAverageFilter(window_size=10)
         self.perclos_calc = PERCLOSCalculator(window_size=90, threshold=0.20)  # Higher threshold to match decision engine
         self.decision_engine = DrowsinessDecisionEngine()
         self.audio_alert = AudioAlert(frequency=800, duration=300)
@@ -61,6 +62,7 @@ class DriverMonitorGUI:
         self.current_smoothed_ear = 0.0
         self.current_perclos = 0.0
         self.current_smoothed_pitch = 0.0
+        self.current_smoothed_mar = 0.0
         self.current_state = 'OK'
         self.current_reason = ''
         
@@ -187,12 +189,19 @@ class DriverMonitorGUI:
                                           bg='#2d2d2d', fg='white', anchor='e')
         self.pitch_value_label.grid(row=2, column=1, sticky='e', padx=5, pady=3)
         
-        # Row 4: Frames
-        tk.Label(metrics_grid, text="Frames:", font=("Arial", 11, "bold"), 
+        # Row 4: MAR (Mouth)
+        tk.Label(metrics_grid, text="Mouth (MAR):", font=("Arial", 11, "bold"), 
                 bg='#2d2d2d', fg='#9b59b6', anchor='w').grid(row=3, column=0, sticky='w', padx=5, pady=3)
+        self.mar_value_label = tk.Label(metrics_grid, text="0.000", font=("Arial", 11), 
+                                        bg='#2d2d2d', fg='white', anchor='e')
+        self.mar_value_label.grid(row=3, column=1, sticky='e', padx=5, pady=3)
+        
+        # Row 5: Frames
+        tk.Label(metrics_grid, text="Frames:", font=("Arial", 11, "bold"), 
+                bg='#2d2d2d', fg='#1abc9c', anchor='w').grid(row=4, column=0, sticky='w', padx=5, pady=3)
         self.frames_value_label = tk.Label(metrics_grid, text="0", font=("Arial", 11), 
                                            bg='#2d2d2d', fg='white', anchor='e')
-        self.frames_value_label.grid(row=3, column=1, sticky='e', padx=5, pady=3)
+        self.frames_value_label.grid(row=4, column=1, sticky='e', padx=5, pady=3)
         
         metrics_grid.columnconfigure(0, weight=1)
         metrics_grid.columnconfigure(1, weight=1)
@@ -216,24 +225,32 @@ class DriverMonitorGUI:
     
     def create_plots(self, parent):
         """Create matplotlib plots for signal visualization"""
-        self.fig = Figure(figsize=(7, 6), facecolor='#1e1e1e')
+        self.fig = Figure(figsize=(7, 8), facecolor='#1e1e1e')
         
         # EAR plot (top)
-        self.ax_ear = self.fig.add_subplot(211, facecolor='#2d2d2d')
-        self.ax_ear.set_title('Eye Aspect Ratio (EAR) Signal', color='white', fontsize=11, fontweight='bold')
-        self.ax_ear.set_ylabel('EAR', color='white', fontsize=9)
-        self.ax_ear.tick_params(colors='white', labelsize=8)
+        self.ax_ear = self.fig.add_subplot(311, facecolor='#2d2d2d')
+        self.ax_ear.set_title('Eye Aspect Ratio (EAR) Signal', color='white', fontsize=10, fontweight='bold')
+        self.ax_ear.set_ylabel('EAR', color='white', fontsize=8)
+        self.ax_ear.tick_params(colors='white', labelsize=7)
         self.ax_ear.grid(True, alpha=0.2, color='gray')
         self.ax_ear.set_ylim([0, 0.5])
         
-        # Head pitch plot (bottom)
-        self.ax_pitch = self.fig.add_subplot(212, facecolor='#2d2d2d')
-        self.ax_pitch.set_title('Head Pitch Signal', color='white', fontsize=11, fontweight='bold')
-        self.ax_pitch.set_xlabel('Sample Number', color='white', fontsize=9)
-        self.ax_pitch.set_ylabel('Pitch (degrees)', color='white', fontsize=9)
-        self.ax_pitch.tick_params(colors='white', labelsize=8)
+        # Head pitch plot (middle)
+        self.ax_pitch = self.fig.add_subplot(312, facecolor='#2d2d2d')
+        self.ax_pitch.set_title('Head Pitch Signal', color='white', fontsize=10, fontweight='bold')
+        self.ax_pitch.set_ylabel('Pitch (degrees)', color='white', fontsize=8)
+        self.ax_pitch.tick_params(colors='white', labelsize=7)
         self.ax_pitch.grid(True, alpha=0.2, color='gray')
-        self.ax_pitch.set_ylim([-30, 30])
+        self.ax_pitch.set_ylim([-40, 40])
+        
+        # MAR plot (bottom)
+        self.ax_mar = self.fig.add_subplot(313, facecolor='#2d2d2d')
+        self.ax_mar.set_title('Mouth Aspect Ratio (MAR) Signal', color='white', fontsize=10, fontweight='bold')
+        self.ax_mar.set_xlabel('Sample Number', color='white', fontsize=8)
+        self.ax_mar.set_ylabel('MAR', color='white', fontsize=8)
+        self.ax_mar.tick_params(colors='white', labelsize=7)
+        self.ax_mar.grid(True, alpha=0.2, color='gray')
+        self.ax_mar.set_ylim([0, 1.0])
         
         self.fig.tight_layout()
         
@@ -241,21 +258,31 @@ class DriverMonitorGUI:
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.canvas.get_tk_widget().pack(fill='both', expand=True)
         
-        # Initialize empty lines
+        # Initialize empty lines - EAR plot
         self.line_raw_ear, = self.ax_ear.plot([], [], 'b-', alpha=0.3, linewidth=1, label='Raw EAR')
         self.line_smooth_ear, = self.ax_ear.plot([], [], 'cyan', linewidth=2, label='Smoothed EAR')
         self.line_threshold_ear = self.ax_ear.axhline(y=0.18, color='red', linestyle='--', 
-                                                       linewidth=1, alpha=0.7, label='Danger Threshold')
-        self.ax_ear.legend(loc='upper right', fontsize=8, facecolor='#2d2d2d', 
+                                                       linewidth=1.5, alpha=0.8, label='Danger < 0.18')
+        self.ax_ear.legend(loc='upper right', fontsize=7, facecolor='#2d2d2d', 
                           edgecolor='white', labelcolor='white')
         
+        # Head pitch plot
         self.line_raw_pitch, = self.ax_pitch.plot([], [], 'orange', alpha=0.3, linewidth=1, label='Raw Pitch')
         self.line_smooth_pitch, = self.ax_pitch.plot([], [], 'yellow', linewidth=2, label='Smoothed Pitch')
-        self.line_threshold_pitch = self.ax_pitch.axhline(y=30.0, color='red', linestyle='--', 
-                                                           linewidth=1, alpha=0.7, label='Danger Threshold')
-        self.ax_pitch.axhline(y=-30.0, color='red', linestyle='--', linewidth=1, alpha=0.7)  # Negative threshold
-        self.ax_pitch.legend(loc='upper right', fontsize=8, facecolor='#2d2d2d', 
+        self.line_threshold_pitch_pos = self.ax_pitch.axhline(y=25.0, color='red', linestyle='--', 
+                                                           linewidth=1.5, alpha=0.8, label='Danger ±25°')
+        self.line_threshold_pitch_neg = self.ax_pitch.axhline(y=-25.0, color='red', linestyle='--', 
+                                                           linewidth=1.5, alpha=0.8)
+        self.ax_pitch.legend(loc='upper right', fontsize=7, facecolor='#2d2d2d', 
                             edgecolor='white', labelcolor='white')
+        
+        # MAR plot
+        self.line_raw_mar, = self.ax_mar.plot([], [], 'purple', alpha=0.3, linewidth=1, label='Raw MAR')
+        self.line_smooth_mar, = self.ax_mar.plot([], [], 'magenta', linewidth=2, label='Smoothed MAR')
+        self.line_threshold_mar = self.ax_mar.axhline(y=0.6, color='orange', linestyle='--', 
+                                                       linewidth=1.5, alpha=0.8, label='Warning > 0.6')
+        self.ax_mar.legend(loc='upper right', fontsize=7, facecolor='#2d2d2d', 
+                          edgecolor='white', labelcolor='white')
     
     def update_plots(self):
         """Update the signal plots"""
@@ -265,10 +292,12 @@ class DriverMonitorGUI:
         # Get signals
         raw_ear = self.signal_buffer.get_array('ear_avg')
         raw_pitch = self.signal_buffer.get_array('pitch')
+        raw_mar = self.signal_buffer.get_array('mar')
         
         # Apply smoothing
         smoothed_ear = self.ear_filter.apply(raw_ear)
         smoothed_pitch = self.pitch_filter.apply(raw_pitch)
+        smoothed_mar = self.mar_filter.apply(raw_mar)
         
         # Limit display to last 150 samples
         display_samples = 150
@@ -278,9 +307,13 @@ class DriverMonitorGUI:
         if len(raw_pitch) > display_samples:
             raw_pitch = raw_pitch[-display_samples:]
             smoothed_pitch = smoothed_pitch[-display_samples:]
+        if len(raw_mar) > display_samples:
+            raw_mar = raw_mar[-display_samples:]
+            smoothed_mar = smoothed_mar[-display_samples:]
         
         x_ear = np.arange(len(raw_ear))
         x_pitch = np.arange(len(raw_pitch))
+        x_mar = np.arange(len(raw_mar))
         
         # Update EAR plot
         self.line_raw_ear.set_data(x_ear, raw_ear)
@@ -291,6 +324,11 @@ class DriverMonitorGUI:
         self.line_raw_pitch.set_data(x_pitch, raw_pitch)
         self.line_smooth_pitch.set_data(x_pitch, smoothed_pitch)
         self.ax_pitch.set_xlim([0, max(150, len(raw_pitch))])
+        
+        # Update MAR plot
+        self.line_raw_mar.set_data(x_mar, raw_mar)
+        self.line_smooth_mar.set_data(x_mar, smoothed_mar)
+        self.ax_mar.set_xlim([0, max(150, len(raw_mar))])
         
         # Redraw
         self.canvas.draw_idle()
@@ -408,31 +446,35 @@ class DriverMonitorGUI:
                 ear_left = faceDetector.ear if hasattr(faceDetector, 'ear') else 0.3
                 ear_right = faceDetector.ear if hasattr(faceDetector, 'ear') else 0.3
                 
-                # Add to signal buffer
-                self.signal_buffer.add_sample(ear_left, ear_right, pitch, roll, yaw)
+                # Add to signal buffer (now includes MAR)
+                self.signal_buffer.add_sample(ear_left, ear_right, pitch, roll, yaw, mar)
                 
                 # Process signals (only if enough samples)
                 if self.signal_buffer.is_ready(30):
                     # Get raw signals
                     raw_ear = self.signal_buffer.get_array('ear_avg')
                     raw_pitch = self.signal_buffer.get_array('pitch')
+                    raw_mar = self.signal_buffer.get_array('mar')
                     
                     # Apply smoothing via convolution
                     smoothed_ear = self.ear_filter.apply(raw_ear)
                     smoothed_pitch = self.pitch_filter.apply(raw_pitch)
+                    smoothed_mar = self.mar_filter.apply(raw_mar)
                     
                     # Get current smoothed values
                     self.current_smoothed_ear = smoothed_ear[-1]
                     self.current_smoothed_pitch = smoothed_pitch[-1]
+                    self.current_smoothed_mar = smoothed_mar[-1]
                     
                     # Compute PERCLOS
                     self.current_perclos = self.perclos_calc.compute(smoothed_ear)
                     
-                    # Make drowsiness decision
+                    # Make drowsiness decision (now includes MAR)
                     self.current_state, self.current_reason = self.decision_engine.evaluate(
                         self.current_smoothed_ear,
                         self.current_perclos,
-                        self.current_smoothed_pitch
+                        self.current_smoothed_pitch,
+                        self.current_smoothed_mar
                     )
                     
                     # Handle audio alert and visual feedback
@@ -457,6 +499,28 @@ class DriverMonitorGUI:
                         
                         cv2.putText(frame, warning_text, (text_x, text_y), 
                                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                    
+                    elif self.current_state == 'WARNING':
+                        self.audio_alert.stop()
+                        
+                        # Draw ORANGE border on frame for warning
+                        cv2.rectangle(frame, (0, 0), (frame.shape[1]-1, frame.shape[0]-1), (0, 165, 255), 12)
+                        
+                        # Add warning text with background
+                        warning_text = "WARNING: TAKE A BREAK"
+                        text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
+                        text_x = (frame.shape[1] - text_size[0]) // 2
+                        text_y = 80
+                        
+                        # Background rectangle for text
+                        cv2.rectangle(frame, (text_x - 10, text_y - text_size[1] - 10), 
+                                    (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+                        cv2.rectangle(frame, (text_x - 10, text_y - text_size[1] - 10), 
+                                    (text_x + text_size[0] + 10, text_y + 10), (0, 165, 255), 3)
+                        
+                        cv2.putText(frame, warning_text, (text_x, text_y), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 165, 255), 3)
+                    
                     else:
                         self.audio_alert.stop()
                         
@@ -468,9 +532,9 @@ class DriverMonitorGUI:
                         cv2.putText(frame, "OK", (50, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
                     # Display signal-based metrics on frame (bottom left, with background)
-                    metrics_y_start = frame.shape[0] - 130
-                    cv2.rectangle(frame, (5, metrics_y_start - 5), (280, frame.shape[0] - 5), (0, 0, 0), -1)
-                    cv2.rectangle(frame, (5, metrics_y_start - 5), (280, frame.shape[0] - 5), (100, 100, 100), 2)
+                    metrics_y_start = frame.shape[0] - 155
+                    cv2.rectangle(frame, (5, metrics_y_start - 5), (300, frame.shape[0] - 5), (0, 0, 0), -1)
+                    cv2.rectangle(frame, (5, metrics_y_start - 5), (300, frame.shape[0] - 5), (100, 100, 100), 2)
                     
                     cv2.putText(frame, f"Smoothed EAR: {self.current_smoothed_ear:.3f}", 
                               (10, metrics_y_start + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
@@ -478,11 +542,13 @@ class DriverMonitorGUI:
                               (10, metrics_y_start + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 1)
                     cv2.putText(frame, f"Head Pitch: {self.current_smoothed_pitch:.1f} deg", 
                               (10, metrics_y_start + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                    cv2.putText(frame, f"Mouth (MAR): {self.current_smoothed_mar:.3f}", 
+                              (10, metrics_y_start + 95), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 1)
                     
                     # State indicator
-                    state_color = (0, 255, 0) if self.current_state == 'OK' else (0, 0, 255)
+                    state_color = (0, 255, 0) if self.current_state == 'OK' else ((0, 165, 255) if self.current_state == 'WARNING' else (0, 0, 255))
                     cv2.putText(frame, f"State: {self.current_state}", 
-                              (10, metrics_y_start + 95), cv2.FONT_HERSHEY_SIMPLEX, 0.5, state_color, 2)
+                              (10, metrics_y_start + 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, state_color, 2)
                 
                 # Store frame for display
                 self.current_frame = frame
@@ -511,6 +577,7 @@ class DriverMonitorGUI:
             self.ear_value_label.config(text=f"{self.current_smoothed_ear:.3f}")
             self.perclos_value_label.config(text=f"{self.current_perclos:.1f}%")
             self.pitch_value_label.config(text=f"{self.current_smoothed_pitch:.1f}°")
+            self.mar_value_label.config(text=f"{self.current_smoothed_mar:.3f}")
             self.frames_value_label.config(text=str(self.total_frames))
             
             # Update alert banner based on state
@@ -520,7 +587,7 @@ class DriverMonitorGUI:
                 self.alert_reason_label.config(text=self.current_reason, bg='#e74c3c')
             elif self.current_state == 'WARNING':
                 self.alert_banner.config(bg='#f39c12')
-                self.alert_state_label.config(text="⚠ WARNING", bg='#f39c12')
+                self.alert_state_label.config(text="⚠ WARNING - TAKE A BREAK", bg='#f39c12')
                 self.alert_reason_label.config(text=self.current_reason, bg='#f39c12')
             else:
                 self.alert_banner.config(bg='#27ae60')

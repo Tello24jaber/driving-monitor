@@ -34,8 +34,60 @@ Triggers **DANGER** state if ANY condition holds:
 
 ## 🚨 Danger Feedback System
 
+### Alert States (Simple State Machine)
+- **OK (GREEN)**: Normal driving, all metrics within safe ranges
+- **WARNING (ORANGE)**: Early fatigue signs (yawning detected)
+  - Visual: Orange border on video feed
+  - Text: "You may be tired – consider resting"
+  - **NO audio alert** (calm warning only)
+- **DANGER (RED)**: Critical drowsiness (eyes closed or head down)
+  - Visual: Red overlay on video feed
+  - Text: "DROWSINESS DETECTED!"
+  - **Continuous audio alarm** until driver responds
+
+### Detection Logic
+
+#### Primary Danger Indicators (Eyes)
+1. **Sustained Eye Closure**:
+   - Smoothed EAR < 0.18 continuously for **> 3 seconds** → DANGER
+   - Red alert + continuous alarm sound
+   
+2. **High PERCLOS**:
+   - PERCLOS > 50% over sliding window → DANGER
+   - Indicates excessive eye closure over time
+
+#### Secondary Danger Indicator (Head Position)
+3. **Head Nodding Down**:
+   - Smoothed head pitch < -25° for **> 2 seconds** → DANGER
+   - Same response as eye-based danger (red + sound)
+
+#### Early Warning Only (Mouth)
+4. **Yawning Detection**:
+   - MAR > 0.6 sustained → **WARNING only**
+   - Orange visual indicator
+   - Text: "You may be tired – consider resting"
+   - **NO sound** (gentle early warning)
+   - **Yawning NEVER triggers DANGER state**
+
+### Hysteresis (Anti-Flickering)
+Prevents rapid state transitions:
+- **Enter DANGER**: Immediate when conditions met
+- **Exit DANGER**: Requires ALL metrics to improve significantly
+  - EAR must rise to 0.18 + 0.05 = 0.23
+  - PERCLOS must drop to 50% - 15% = 35%
+  - Pitch must return to > -17°
+- **Exit WARNING**: MAR must drop below 0.6 - 0.1 = 0.5
+
 ### Visual Warnings
-- **Normal state**: Green indicator, normal video feed
+- **Normal state (OK)**: 
+  - Green border on video
+  - Green status indicator
+  
+- **WARNING state**: 
+  - Orange border on video
+  - "WARNING: TAKE A BREAK" text
+  - Calm visual only (no alarm)
+  
 - **DANGER state**: 
   - RED overlay on video feed
   - Large "DROWSINESS DETECTED!" warning text
@@ -43,10 +95,12 @@ Triggers **DANGER** state if ANY condition holds:
   - Metrics display reason for alert
 
 ### Audio Warnings
-- **Continuous beep** plays when DANGER state is active
-- Frequency: 800 Hz
-- Pattern: Beep (300ms) → Pause (100ms) → Repeat
-- Automatically stops when state returns to OK
+- **WARNING state**: NO audio (visual only)
+- **DANGER state**: 
+  - Continuous beep plays when DANGER state is active
+  - Frequency: 800 Hz
+  - Pattern: Beep (300ms) → Pause (100ms) → Repeat
+  - Automatically stops when state returns to OK or WARNING
 
 ## 📊 Live Visualization
 
@@ -135,12 +189,17 @@ driving-monitor/
 - `threshold`: 0.2 (eye closure)
 
 ### Decision Engine
-- `ear_danger_threshold`: 0.18
-- `perclos_danger_threshold`: 70%
-- `pitch_danger_threshold`: 20°
-- `ear_hysteresis`: 0.03
-- `perclos_hysteresis`: 10%
-- `pitch_hysteresis`: 5°
+- `ear_danger_threshold`: 0.18 (eyes closed)
+- `perclos_danger_threshold`: 50% (high eye closure)
+- `pitch_danger_threshold`: 25° (head down)
+- `mar_warning_threshold`: 0.6 (yawning - WARNING only)
+- `ear_sustained_frames`: 90 (3 seconds at 30 FPS)
+- `pitch_sustained_frames`: 60 (2 seconds at 30 FPS)
+- `mar_sustained_frames`: 45 (1.5 seconds at 30 FPS)
+- `ear_hysteresis`: 0.05
+- `perclos_hysteresis`: 15%
+- `pitch_hysteresis`: 8°
+- `mar_hysteresis`: 0.1
 
 ## 🎯 Key Improvements Over Original
 

@@ -8,26 +8,36 @@ class DrowsinessDecisionEngine:
     """
     Makes drowsiness decisions using signal processing
     Implements hysteresis to prevent flickering
+    States: OK -> WARNING (mouth/fatigue) -> DANGER (eyes/head)
     """
     def __init__(self):
-        # Thresholds - adjusted for realistic values
-        # Normal open-eye EAR is typically 0.25-0.35, closed is <0.15
-        self.ear_danger_threshold = 0.18  # Raised slightly from 0.15 to avoid false positives
-        self.ear_warning_threshold = 0.20  # Between normal (0.25+) and danger
-        self.perclos_danger_threshold = 50.0  # 50% (raised from 40% - more conservative)
-        self.perclos_warning_threshold = 25.0  # Between normal and danger
-        self.pitch_danger_threshold = 30.0  # degrees (raised from 25° to be more forgiving)
-        self.pitch_warning_threshold = 15.0  # degrees
+        # EAR thresholds - primary danger indicator
+        self.ear_danger_threshold = 0.11  # Eyes closed threshold (adjusted for actual facial geometry)
         
-        # Sustained time requirements (frames) - require longer sustained periods
-        self.ear_sustained_frames = 60  # ~2 sec at 30fps (was 45 - need more sustained)
-        self.pitch_sustained_frames = 60  # ~2 sec at 30fps (was 45)
-        self.min_samples_before_eval = 100  # Need at least 100 samples before even checking (don't trigger in first 3 sec)
+        # PERCLOS thresholds - primary danger indicator
+        self.perclos_danger_threshold = 50.0  # 50% eye closure over time window
         
-        # Hysteresis margins - larger margins to prevent flickering
-        self.ear_hysteresis = 0.08  # (was 0.05)
-        self.perclos_hysteresis = 20.0  # (was 15.0)
-        self.pitch_hysteresis = 10.0  # (was 8.0)
+        # Head angle thresholds - secondary danger indicator (deviation from baseline)
+        self.head_deviation_threshold = 6.0  # Degrees deviation from normal position (matches reference repo)
+        
+        # MAR thresholds - early warning only (no danger)
+        self.mar_warning_threshold = 0.6  # Yawning threshold
+        
+        # Sustained time requirements (frames at 30fps)
+        self.ear_sustained_frames = 90  # 3 seconds - prevent blinks from triggering
+        self.head_sustained_frames = 45  # 1.5 seconds - head position change
+        self.mar_sustained_frames = 45  # 1.5 seconds - yawn must persist
+        self.min_samples_before_eval = 30  # Calibration period
+        self.baseline_calibration_samples = 90  # 3 seconds to establish baseline head position
+        
+        # Hysteresis margins - prevent alert flickering
+        self.ear_hysteresis = 0.05  # Return to safe requires EAR to be higher
+        self.perclos_hysteresis = 15.0  # Return to safe requires PERCLOS lower
+        self.head_hysteresis = 5.0  # Return to safe requires smaller deviation
+        self.mar_hysteresis = 0.1  # Return from warning requires MAR lower
+        
+        # Baseline head position (calibrated from initial frames)
+        self.baseline_pitch = None
         
         # State tracking
         self.state = 'OK'  # OK, WARNING, DANGER
@@ -35,16 +45,17 @@ class DrowsinessDecisionEngine:
         self.warning_start_time = None
         self.last_ear_values = []
         self.last_pitch_values = []
-        self.conditions_met = {'ear': False, 'perclos': False, 'pitch': False}
+        self.last_mar_values = []
         
-    def evaluate(self, smoothed_ear, perclos, smoothed_pitch):
+    def evaluate(self, smoothed_ear, perclos, smoothed_pitch, smoothed_mar=0.0):
         """
         Evaluate drowsiness state based on processed signals
         
         Args:
             smoothed_ear: Current smoothed EAR value
             perclos: Current PERCLOS percentage
-            smoothed_pitch: Current smoothed head pitch (degrees)
+            smoothed_pitch: Current smoothed head pitch (degrees, negative = down)
+            smoothed_mar: Current smoothed MAR value (mouth aspect ratio)
             
         Returns:
             state: 'OK', 'WARNING', or 'DANGER'
@@ -53,77 +64,161 @@ class DrowsinessDecisionEngine:
         # Track recent values for sustained checks
         self.last_ear_values.append(smoothed_ear)
         self.last_pitch_values.append(smoothed_pitch)
+        self.last_mar_values.append(smoothed_mar)
         
-        # Keep only recent history (need at least 60 for hysteresis checks)
-        if len(self.last_ear_values) > 120:
+        # Keep only recent history
+        max_history = max(self.ear_sustained_frames, self.head_sustained_frames, self.mar_sustained_frames) + 30
+        if len(self.last_ear_values) > max_history:
             self.last_ear_values.pop(0)
-        if len(self.last_pitch_values) > 120:
+        if len(self.last_pitch_values) > max_history:
             self.last_pitch_values.pop(0)
+        if len(self.last_mar_values) > max_history:
+            self.last_mar_values.pop(0)
         
-        # Only evaluate once we have enough history
+        # CALIBRATE BASELINE HEAD POSITION from initial frames
+        if len(self.last_pitch_values) == self.baseline_calibration_samples:
+            self.baseline_pitch = np.median(self.last_pitch_values)
+            print(f"[BASELINE] Pitch: {self.baseline_pitch:.1f}°")
+        
+        # Only evaluate once we have enough history and baseline
         if len(self.last_ear_values) < self.min_samples_before_eval:
             self.state = 'OK'
-            return self.state, f"Calibrating... ({len(self.last_ear_values)}/{self.min_samples_before_eval} samples)"
+            return self.state, f"Calibrating... ({len(self.last_ear_values)}/{self.baseline_calibration_samples} samples)"
         
-        # Get recent sustained values
-        recent_ear = self.last_ear_values[-self.ear_sustained_frames:]
-        recent_pitch = self.last_pitch_values[-self.pitch_sustained_frames:]
-        mean_ear = np.mean(recent_ear)
-        mean_pitch = np.abs(np.mean(recent_pitch))
+        if self.baseline_pitch is None:
+            self.state = 'OK'
+            return self.state, "Establishing baseline head position..."
         
-        # Evaluate danger conditions
+        # Debug: Print current values every 30 frames
+        if len(self.last_ear_values) % 30 == 0:
+            pitch_dev = abs(smoothed_pitch - self.baseline_pitch)
+            print(f"[DEBUG] EAR: {smoothed_ear:.3f} | Pitch: {smoothed_pitch:.1f}° (dev: {pitch_dev:.1f}°, baseline: {self.baseline_pitch:.1f}°) | MAR: {smoothed_mar:.3f} | PERCLOS: {perclos:.1f}%")
+        
+        # === DANGER CONDITIONS (Primary: Eyes, Secondary: Head) ===
+        
         danger_conditions = []
         
-        # Condition 1: Sustained critically low EAR
-        if mean_ear < self.ear_danger_threshold:
-            danger_conditions.append(f"Low EAR ({mean_ear:.3f})")
+        # PRIMARY DANGER: Eyes closed for > 3 seconds
+        if len(self.last_ear_values) >= self.ear_sustained_frames:
+            recent_ear = self.last_ear_values[-self.ear_sustained_frames:]
+            mean_ear = np.mean(recent_ear)
+            
+            if mean_ear < self.ear_danger_threshold:
+                danger_conditions.append(f"Eyes closed ({mean_ear:.3f} < {self.ear_danger_threshold})")
         
-        # Condition 2: High PERCLOS
+        # PRIMARY DANGER: High PERCLOS
         if perclos > self.perclos_danger_threshold:
-            danger_conditions.append(f"High PERCLOS ({perclos:.1f}%)")
+            danger_conditions.append(f"High eye closure ({perclos:.1f}% > {self.perclos_danger_threshold}%)")
         
-        # Condition 3: Sustained significant head tilt
-        if mean_pitch > self.pitch_danger_threshold:
-            danger_conditions.append(f"Head tilted ({mean_pitch:.1f}°)")
+        # SECONDARY DANGER: Head position abnormal (looking down/up or tilted)
+        if len(self.last_pitch_values) >= self.head_sustained_frames:
+            recent_pitch = self.last_pitch_values[-self.head_sustained_frames:]
+            mean_pitch = np.mean(recent_pitch)
+            
+            # Check deviation from baseline (not absolute values)
+            pitch_deviation = abs(mean_pitch - self.baseline_pitch)
+            
+            # Significant pitch deviation (head tilted down/up or sideways)
+            if pitch_deviation > self.head_deviation_threshold:
+                # Determine direction based on sign
+                if mean_pitch < self.baseline_pitch:
+                    direction = "down"
+                else:
+                    direction = "up"
+                danger_conditions.append(f"Head {direction} (pitch: {mean_pitch:.1f}° vs baseline {self.baseline_pitch:.1f}°, dev: {pitch_deviation:.1f}°)")
         
-        # State transitions with hysteresis
+        # === WARNING CONDITIONS (Mouth/Fatigue only - NO DANGER) ===
+        
+        warning_conditions = []
+        
+        # EARLY WARNING: Yawning (sustained high MAR)
+        if len(self.last_mar_values) >= self.mar_sustained_frames:
+            recent_mar = self.last_mar_values[-self.mar_sustained_frames:]
+            mean_mar = np.mean(recent_mar)
+            
+            if mean_mar > self.mar_warning_threshold:
+                warning_conditions.append(f"Yawning detected (MAR: {mean_mar:.3f})")
+        
+        # === STATE TRANSITIONS WITH HYSTERESIS ===
+        
         if danger_conditions:
-            # Has danger conditions
+            # CRITICAL: Eyes or head issue -> DANGER state
             if self.state != 'DANGER':
                 self.danger_start_time = time.time()
             self.state = 'DANGER'
             reason = " | ".join(danger_conditions)
             
+        elif warning_conditions and self.state != 'DANGER':
+            # MILD: Only mouth/fatigue -> WARNING state (never escalate from OK to DANGER via WARNING)
+            if self.state != 'WARNING':
+                self.warning_start_time = time.time()
+            self.state = 'WARNING'
+            reason = "You may be tired – consider resting"
+            
         else:
-            # No danger conditions - check if we can safely exit DANGER state
+            # NO ACTIVE CONDITIONS: Check if we can return to safe
+            
             if self.state == 'DANGER':
-                # Need ALL metrics to improve significantly to exit
-                ear_improved = mean_ear >= (self.ear_danger_threshold + self.ear_hysteresis)
-                perclos_improved = perclos <= (self.perclos_danger_threshold - self.perclos_hysteresis)
-                pitch_improved = mean_pitch <= (self.pitch_danger_threshold - self.pitch_hysteresis)
+                # Exiting DANGER: Check CURRENT EAR for immediate response, sustained for others
                 
-                if ear_improved and perclos_improved and pitch_improved:
-                    # All metrics have improved - exit to OK
+                # Check CURRENT EAR for immediate response (no hysteresis delay)
+                current_ear_safe = smoothed_ear >= self.ear_danger_threshold
+                
+                # Check PERCLOS improvement
+                perclos_safe = perclos <= (self.perclos_danger_threshold - self.perclos_hysteresis)
+                
+                # Check head position improvement (deviation from baseline)
+                if len(self.last_pitch_values) >= 10:
+                    recent_pitch = self.last_pitch_values[-10:]
+                    mean_pitch = np.mean(recent_pitch)
+                    
+                    # Head is safe if deviation is below threshold
+                    pitch_deviation = abs(mean_pitch - self.baseline_pitch)
+                    head_safe = pitch_deviation <= (self.head_deviation_threshold - self.head_hysteresis)
+                else:
+                    head_safe = True
+                
+                if current_ear_safe and head_safe:
+                    # Eyes open AND head in normal position - IMMEDIATE return to safe
                     self.state = 'OK'
                     self.danger_start_time = None
-                    self.last_ear_values = []
-                    self.last_pitch_values = []
-                    reason = "All metrics improved - returning to normal"
+                    reason = "✓ Driver alert - All metrics normal"
                 else:
-                    # Still some issues - stay in DANGER
+                    # Still dangerous - remain in DANGER
                     issues = []
-                    if not ear_improved:
-                        issues.append(f"EAR still low ({mean_ear:.3f})")
-                    if not perclos_improved:
-                        issues.append(f"PERCLOS still high ({perclos:.1f}%)")
-                    if not pitch_improved:
-                        issues.append(f"Head still tilted ({mean_pitch:.1f}°)")
-                    reason = "Still in danger - " + " | ".join(issues)
+                    if not current_ear_safe:
+                        issues.append("eyes closing")
+                    if not head_safe:
+                        issues.append("head abnormal")
+                    reason = "Danger: " + ", ".join(issues)
                     self.state = 'DANGER'
+                    
+            elif self.state == 'WARNING':
+                # Exiting WARNING requires MAR to drop with hysteresis
+                if len(self.last_mar_values) >= self.mar_sustained_frames:
+                    recent_mar = self.last_mar_values[-self.mar_sustained_frames:]
+                    mean_mar = np.mean(recent_mar)
+                    
+                    if mean_mar <= (self.mar_warning_threshold - self.mar_hysteresis):
+                        # Fatigue signs reduced - SAFE
+                        self.state = 'OK'
+                        self.warning_start_time = None
+                        reason = "✓ Driver alert - Fatigue signs reduced"
+                    else:
+                        # Still tired - remain in WARNING
+                        reason = "You may be tired – consider resting"
+                        self.state = 'WARNING'
+                else:
+                    self.state = 'OK'
+                    reason = "✓ Normal state"
+                    
             else:
-                # In OK state with no danger conditions
+                # Already OK and no issues
                 self.state = 'OK'
-                reason = f"Normal (EAR: {mean_ear:.3f}, PERCLOS: {perclos:.1f}%, Pitch: {mean_pitch:.1f}°)"
+                # Get current values for display
+                current_ear = self.last_ear_values[-1] if self.last_ear_values else 0.3
+                current_pitch = self.last_pitch_values[-1] if self.last_pitch_values else 0.0
+                reason = f"Normal (EAR: {current_ear:.3f}, PERCLOS: {perclos:.1f}%, Pitch: {current_pitch:.1f}°)"
         
         return self.state, reason
     
@@ -131,8 +226,10 @@ class DrowsinessDecisionEngine:
         """Reset decision engine state"""
         self.state = 'OK'
         self.danger_start_time = None
+        self.warning_start_time = None
         self.last_ear_values = []
         self.last_pitch_values = []
+        self.last_mar_values = []
     
     def get_danger_duration(self):
         """Get how long we've been in danger state (seconds)"""
