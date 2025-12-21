@@ -154,7 +154,8 @@ class HeadPose:
         cv2.projectPoints(self.nose3d, self.rvec, self.tvec, self.cameraMatrix, self.distCoeffs)
 
         p1 = (int(self.nose2d[0]), int(self.nose2d[1]))
-        p2 = (int(self.nose2d[0] + self.pitch * 10) , int(self.nose2d[1] - self.roll * 10))
+        # Use yaw for horizontal (left-right) and pitch for vertical (up-down) movement
+        p2 = (int(self.nose2d[0] + self.yaw * 10) , int(self.nose2d[1] - self.pitch * 10))
         
         cv2.line(self.frame, p1, p2, (0, 0, 255), 3)
         cv2.putText(self.frame, "Roll: " + str(np.round(self.roll,2)), (500, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)

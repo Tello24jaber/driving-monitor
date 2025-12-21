@@ -22,7 +22,8 @@ from signals import (
     MovingAverageFilter,
     PERCLOSCalculator,
     DrowsinessDecisionEngine,
-    AudioAlert
+    AudioAlert,
+    SignalDeepClassifier,
 )
 
 # Import matplotlib for plotting
@@ -57,6 +58,9 @@ class DriverMonitorGUI:
         self.perclos_calc = PERCLOSCalculator(window_size=90, threshold=0.20)  # Higher threshold to match decision engine
         self.decision_engine = DrowsinessDecisionEngine()
         self.audio_alert = AudioAlert(frequency=800, duration=300)
+
+        # Optional deep-learning support (signals-only). Enabled when model file exists.
+        self.dl_classifier = SignalDeepClassifier()
         
         # Current signal values
         self.current_smoothed_ear = 0.0
@@ -446,8 +450,13 @@ class DriverMonitorGUI:
                 ear_left = faceDetector.ear if hasattr(faceDetector, 'ear') else 0.3
                 ear_right = faceDetector.ear if hasattr(faceDetector, 'ear') else 0.3
                 
+                # Head-down signal: roll below its baseline indicates nodding/down.
+                # This avoids false DANGER when the driver simply looks right/left.
+                head_down = max(0.0, float(baseR) - float(roll))
+
                 # Add to signal buffer (now includes MAR)
-                self.signal_buffer.add_sample(ear_left, ear_right, pitch, roll, yaw, mar)
+                # NOTE: We store head_down into the 'pitch' channel to keep the rest of the signal pipeline unchanged.
+                self.signal_buffer.add_sample(ear_left, ear_right, head_down, roll, yaw, mar)
                 
                 # Process signals (only if enough samples)
                 if self.signal_buffer.is_ready(30):
@@ -470,11 +479,21 @@ class DriverMonitorGUI:
                     self.current_perclos = self.perclos_calc.compute(smoothed_ear)
                     
                     # Make drowsiness decision (now includes MAR)
+                    dl_prob = None
+                    if self.dl_classifier is not None and self.dl_classifier.enabled:
+                        dl_prob = self.dl_classifier.predict_danger_prob(
+                            float(self.current_smoothed_ear),
+                            float(self.current_perclos),
+                            float(self.current_smoothed_pitch),
+                            float(self.current_smoothed_mar),
+                        )
+
                     self.current_state, self.current_reason = self.decision_engine.evaluate(
                         self.current_smoothed_ear,
                         self.current_perclos,
                         self.current_smoothed_pitch,
-                        self.current_smoothed_mar
+                        self.current_smoothed_mar,
+                        dl_danger_prob=dl_prob,
                     )
                     
                     # Handle audio alert and visual feedback

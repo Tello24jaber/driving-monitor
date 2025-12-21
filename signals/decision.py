@@ -38,6 +38,15 @@ class DrowsinessDecisionEngine:
         
         # Baseline head position (calibrated from initial frames)
         self.baseline_pitch = None
+
+        # Optional deep-learning (signals-only) support
+        # The DL model consumes the same signal vector [EAR, PERCLOS, Pitch, MAR] and outputs p(danger).
+        # We allow it to trigger DANGER, but with hysteresis to prevent flicker.
+        self.dl_danger_threshold = 0.85
+        self.dl_safe_threshold = 0.35
+        self.dl_danger_sustained_frames = 15  # ~0.5s at 30fps
+        self.dl_safe_sustained_frames = 15
+        self.last_dl_danger_probs = []
         
         # State tracking
         self.state = 'OK'  # OK, WARNING, DANGER
@@ -47,7 +56,7 @@ class DrowsinessDecisionEngine:
         self.last_pitch_values = []
         self.last_mar_values = []
         
-    def evaluate(self, smoothed_ear, perclos, smoothed_pitch, smoothed_mar=0.0):
+    def evaluate(self, smoothed_ear, perclos, smoothed_pitch, smoothed_mar=0.0, *, dl_danger_prob=None):
         """
         Evaluate drowsiness state based on processed signals
         
@@ -65,6 +74,12 @@ class DrowsinessDecisionEngine:
         self.last_ear_values.append(smoothed_ear)
         self.last_pitch_values.append(smoothed_pitch)
         self.last_mar_values.append(smoothed_mar)
+
+        if dl_danger_prob is not None:
+            try:
+                self.last_dl_danger_probs.append(float(dl_danger_prob))
+            except Exception:
+                pass
         
         # Keep only recent history
         max_history = max(self.ear_sustained_frames, self.head_sustained_frames, self.mar_sustained_frames) + 30
@@ -74,6 +89,8 @@ class DrowsinessDecisionEngine:
             self.last_pitch_values.pop(0)
         if len(self.last_mar_values) > max_history:
             self.last_mar_values.pop(0)
+        if len(self.last_dl_danger_probs) > max_history:
+            self.last_dl_danger_probs.pop(0)
         
         # CALIBRATE BASELINE HEAD POSITION from initial frames
         if len(self.last_pitch_values) == self.baseline_calibration_samples:
@@ -109,8 +126,16 @@ class DrowsinessDecisionEngine:
         # PRIMARY DANGER: High PERCLOS
         if perclos > self.perclos_danger_threshold:
             danger_conditions.append(f"High eye closure ({perclos:.1f}% > {self.perclos_danger_threshold}%)")
+
+        # OPTIONAL DL DANGER (signals-only): allow the model to trigger DANGER directly.
+        dl_danger_active = False
+        dl_mean = None
+        if len(self.last_dl_danger_probs) >= self.dl_danger_sustained_frames:
+            recent_dl = self.last_dl_danger_probs[-self.dl_danger_sustained_frames:]
+            dl_mean = float(np.mean(recent_dl))
+            dl_danger_active = dl_mean >= self.dl_danger_threshold
         
-        # SECONDARY DANGER: Head position abnormal (looking down/up or tilted)
+        # SECONDARY DANGER: Head position abnormal (head-down/nodding signal)
         if len(self.last_pitch_values) >= self.head_sustained_frames:
             recent_pitch = self.last_pitch_values[-self.head_sustained_frames:]
             mean_pitch = np.mean(recent_pitch)
@@ -118,14 +143,15 @@ class DrowsinessDecisionEngine:
             # Check deviation from baseline (not absolute values)
             pitch_deviation = abs(mean_pitch - self.baseline_pitch)
             
-            # Significant pitch deviation (head tilted down/up or sideways)
-            if pitch_deviation > self.head_deviation_threshold:
-                # Determine direction based on sign
-                if mean_pitch < self.baseline_pitch:
-                    direction = "down"
-                else:
-                    direction = "up"
-                danger_conditions.append(f"Head {direction} (pitch: {mean_pitch:.1f}° vs baseline {self.baseline_pitch:.1f}°, dev: {pitch_deviation:.1f}°)")
+            # Significant head-down deviation
+            # In the GUI pipeline, the 'pitch' channel is a head_down signal: max(0, base_roll - roll).
+            if (mean_pitch - self.baseline_pitch) > self.head_deviation_threshold:
+                danger_conditions.append(
+                    f"Head down (signal: {mean_pitch:.1f} vs baseline {self.baseline_pitch:.1f}, dev: {mean_pitch - self.baseline_pitch:.1f})"
+                )
+
+        if dl_danger_active:
+            danger_conditions.append(f"DL danger (p(danger)≈{dl_mean:.2f})")
         
         # === WARNING CONDITIONS (Mouth/Fatigue only - NO DANGER) ===
         
@@ -166,6 +192,14 @@ class DrowsinessDecisionEngine:
                 
                 # Check PERCLOS improvement
                 perclos_safe = perclos <= (self.perclos_danger_threshold - self.perclos_hysteresis)
+
+                # Check DL improvement (if DL is available)
+                dl_safe = True
+                dl_exit_mean = None
+                if len(self.last_dl_danger_probs) >= self.dl_safe_sustained_frames:
+                    recent_dl_exit = self.last_dl_danger_probs[-self.dl_safe_sustained_frames:]
+                    dl_exit_mean = float(np.mean(recent_dl_exit))
+                    dl_safe = dl_exit_mean <= self.dl_safe_threshold
                 
                 # Check head position improvement (deviation from baseline)
                 if len(self.last_pitch_values) >= 10:
@@ -178,7 +212,8 @@ class DrowsinessDecisionEngine:
                 else:
                     head_safe = True
                 
-                if current_ear_safe and head_safe:
+                # Return to OK only when BOTH signals and DL indicate safety.
+                if current_ear_safe and head_safe and dl_safe:
                     # Eyes open AND head in normal position - IMMEDIATE return to safe
                     self.state = 'OK'
                     self.danger_start_time = None
@@ -190,6 +225,8 @@ class DrowsinessDecisionEngine:
                         issues.append("eyes closing")
                     if not head_safe:
                         issues.append("head abnormal")
+                    if not dl_safe:
+                        issues.append(f"dl danger (p≈{dl_exit_mean:.2f})")
                     reason = "Danger: " + ", ".join(issues)
                     self.state = 'DANGER'
                     
