@@ -60,7 +60,7 @@ This reduces false positives when the driver simply looks left/right.
 ### PERCLOS (Percentage of Eye Closure)
 PERCLOS is computed as a percentage over a sliding window on the (smoothed) EAR signal:
 
-$$\text{PERCLOS} = \frac{\#\{\text{frames where } EAR < T\}}{\#\{\text{frames in window}\}} \times 100\%$$
+$$\text{PERCLOS} = \frac{|\{\text{frames where } EAR < T\}|}{|\{\text{frames in window}\}|} \times 100\%$$
 
 In this project, PERCLOS is represented as a **percentage in $[0, 100]$**.
 
