@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from PIL import Image, ImageTk
 import cv2
 import threading

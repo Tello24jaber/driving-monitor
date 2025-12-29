@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from PIL import Image, ImageTk
 import cv2
 import threading
@@ -29,7 +29,6 @@ from signals import (
 # Import matplotlib for plotting
 import matplotlib
 matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
